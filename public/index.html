@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>局域网互传</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171d2b;
+    --panel-2: #1e2536;
+    --border: #2a3348;
+    --text: #e7ecf5;
+    --muted: #8b97ad;
+    --accent: #4f8cff;
+    --accent-2: #2f6fe0;
+    --danger: #ef4d5a;
+    --ok: #35c48a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #1b2740, var(--bg));
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; font-weight: 650; }
+  .badge {
+    font-size: 12px; color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--border); padding: 3px 10px; border-radius: 999px;
+  }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; }
+  .dot.off { background: var(--danger); }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; margin-top: 18px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
+
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; outline: none;
+    cursor: pointer; transition: .15s;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { background: var(--accent-2); }
+  button.ghost { background: transparent; }
+  button.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+  #drop {
+    border: 2px dashed var(--border); border-radius: 14px; padding: 26px;
+    text-align: center; color: var(--muted); transition: .15s; cursor: pointer;
+  }
+  #drop.hot { border-color: var(--accent); background: rgba(79,140,255,.08); color: var(--text); }
+  #drop.disabled { opacity: .5; cursor: not-allowed; }
+  #drop b { color: var(--text); }
+
+  ul.files { list-style: none; margin: 0; padding: 0; }
+  ul.files li {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 8px; background: var(--panel-2);
+  }
+  .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fmeta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 14px; }
+
+  .bar { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin-top: 8px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s; }
+  .up { margin-top: 10px; font-size: 13px; color: var(--muted); }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(20px);
+    background: #0b1020; border: 1px solid var(--border); color: var(--text);
+    padding: 10px 16px; border-radius: 10px; opacity: 0; transition: .25s; pointer-events: none; font-size: 14px;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { border-color: var(--danger); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.7; }
+  code { background: var(--panel-2); border: 1px solid var(--border); padding: 1px 6px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>局域网互传</h1>
+    <span class="badge"><span class="dot off" id="dot"></span><span id="statusLabel">连接中…</span></span>
+    <span class="badge" id="addrLabel"></span>
+  </header>
+
+  <div class="card">
+    <h2>上传到主机</h2>
+    <div id="drop" class="disabled">
+      点击选择文件，或把文件拖到这里上传
+      <div class="hint" id="dropHint">正在连接主机…</div>
+    </div>
+    <input type="file" id="picker" multiple hidden />
+    <div class="bar" id="upBar" style="display:none"><i></i></div>
+    <div class="up" id="upStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>主机上的文件 · <span id="hostName">-</span></h2>
+    <ul class="files" id="files"></ul>
+    <div class="empty" id="empty">正在加载…</div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" id="refresh">刷新列表</button>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const SERVED = location.protocol === 'http:' || location.protocol === 'https:';
+const BASE = location.origin;
+
+let connected = false;
+let files = [];
+
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.className = ''), 2600);
+}
+
+function fmtSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function fmtTime(ms) {
+  const d = new Date(ms);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function setConnected(ok, label) {
+  connected = ok;
+  $('dot').className = 'dot' + (ok ? '' : ' off');
+  $('statusLabel').textContent = label;
+  $('drop').classList.toggle('disabled', !ok);
+  $('addrLabel').textContent = ok ? location.host : '';
+}
+
+async function connect() {
+  setConnected(false, '连接中…');
+  try {
+    const r = await fetch(BASE + '/api/info', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const info = await r.json();
+    $('hostName').textContent = info.name || '-';
+    $('dropHint').textContent = location.host + ' · 共享目录 ' + (info.dir || '');
+    setConnected(true, '已连接');
+    document.title = '局域网互传 · ' + (info.name || location.host);
+    loadFiles();
+  } catch (e) {
+    setConnected(false, '连接失败');
+    $('hostName').textContent = '-';
+    $('dropHint').textContent = '无法连接主机，请刷新重试';
+    $('files').innerHTML = '';
+    $('empty').textContent = '无法连接主机：' + e.message;
+  }
+}
+
+async function loadFiles() {
+  if (!connected) return;
+  const ul = $('files');
+  ul.innerHTML = '<div class="empty">加载中…</div>';
+  $('empty').style.display = 'none';
+  try {
+    const r = await fetch(BASE + '/api/files', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    files = data.files || [];
+    if (data.name) $('hostName').textContent = data.name;
+    renderFiles();
+  } catch (e) {
+    setConnected(false, '连接断开');
+    ul.innerHTML = '';
+    $('empty').style.display = 'block';
+    $('empty').textContent = '无法连接主机：' + e.message;
+  }
+}
+
+function renderFiles() {
+  const ul = $('files');
+  ul.innerHTML = '';
+  $('empty').style.display = files.length ? 'none' : 'block';
+  $('empty').textContent = '暂无文件';
+  for (const f of files) {
+    const li = document.createElement('li');
+    const name = document.createElement('div');
+    name.className = 'fname';
+    name.textContent = f.name;
+    name.title = f.name;
+    const meta = document.createElement('div');
+    meta.className = 'fmeta';
+    meta.textContent = fmtSize(f.size) + ' · ' + fmtTime(f.mtime);
+    const dl = document.createElement('button');
+    dl.className = 'primary';
+    dl.textContent = '下载';
+    dl.onclick = () => download(f.name);
+    const del = document.createElement('button');
+    del.className = 'danger ghost';
+    del.textContent = '删除';
+    del.onclick = () => removeFile(f.name);
+    li.append(name, meta, dl, del);
+    ul.appendChild(li);
+  }
+}
+
+function download(name) {
+  const a = document.createElement('a');
+  a.href = BASE + '/api/download?name=' + encodeURIComponent(name);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast('开始下载 ' + name);
+}
+
+async function removeFile(name) {
+  if (!confirm('确定删除主机上的 "' + name + '" ?')) return;
+  try {
+    const r = await fetch(BASE + '/api/files?name=' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('已删除');
+    loadFiles();
+  } catch (e) {
+    toast('删除失败：' + e.message, true);
+  }
+}
+
+function upload(fileList) {
+  if (!connected) return toast('未连接主机', true);
+  const list = Array.from(fileList || []);
+  if (!list.length) return;
+  const bar = $('upBar');
+  const fill = bar.querySelector('i');
+  bar.style.display = 'block';
+  fill.style.width = '0%';
+  let idx = 0;
+  let done = 0;
+
+  const next = () => {
+    if (idx >= list.length) {
+      $('upStatus').textContent = `全部完成：${done}/${list.length}`;
+      setTimeout(() => { bar.style.display = 'none'; $('upStatus').textContent = ''; }, 1800);
+      loadFiles();
+      return;
+    }
+    const file = list[idx];
+    $('upStatus').textContent = `正在上传 (${idx + 1}/${list.length}) ${file.name}`;
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', BASE + '/api/upload?name=' + encodeURIComponent(file.name));
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = ((idx + e.loaded / e.total) / list.length) * 100;
+        fill.style.width = pct.toFixed(1) + '%';
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        done++;
+        idx++;
+        next();
+      } else {
+        $('upStatus').textContent = `上传失败 ${file.name}`;
+        toast('上传失败：' + file.name, true);
+      }
+    };
+    xhr.onerror = () => {
+      $('upStatus').textContent = `网络错误 ${file.name}`;
+      toast('网络错误，无法连接主机', true);
+    };
+    xhr.send(file);
+  };
+  next();
+}
+
+const drop = $('drop');
+drop.onclick = () => { if (connected) $('picker').click(); else toast('未连接主机', true); };
+$('picker').onchange = (e) => { upload(e.target.files); e.target.value = ''; };
+['dragenter', 'dragover'].forEach((ev) =>
+  drop.addEventListener(ev, (e) => { e.preventDefault(); if (connected) drop.classList.add('hot'); })
+);
+['dragleave', 'drop'].forEach((ev) =>
+  drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('hot'); })
+);
+drop.addEventListener('drop', (e) => upload(e.dataTransfer.files));
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+
+$('refresh').onclick = () => (connected ? loadFiles() : connect());
+
+if (SERVED) {
+  connect();
+} else {
+  setConnected(false, '请通过主机地址访问');
+  $('empty').textContent = '请用浏览器打开主机给出的地址，例如 http://192.168.1.23:8080';
+  $('dropHint').textContent = '请通过主机地址访问';
+}
+</script>
+</body>
+</html>

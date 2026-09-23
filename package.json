@@ -1,0 +1,16 @@
+{
+  "name": "lan-drop",
+  "version": "1.0.0",
+  "description": "零依赖的局域网文件互传工具，浏览器输入主机 IP 即可上传下载",
+  "main": "server.js",
+  "bin": {
+    "lan-drop": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT"
+}
