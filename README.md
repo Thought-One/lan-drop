@@ -63,34 +63,6 @@ lan-drop.exe -p 8081 -d D:\share -n 我的电脑
 
 ---
 
-## 打包为单文件 exe
-
-基于 [Node.js Single Executable Applications (SEA)](https://nodejs.org/api/single-executable-applications.html)，在 PowerShell 中执行：
-
-```powershell
-cd H:\programs\p2p
-
-# 1) 生成 SEA blob
-node --experimental-sea-config sea-config.json
-
-# 2) 复制 node.exe 作为基础可执行文件
-Copy-Item (Get-Command node).Source .\dist\lan-drop.exe -Force
-
-# 3) 注入 blob，生成单文件 exe
-npx --yes postject .\dist\lan-drop.exe NODE_SEA_BLOB .\build\sea-prep.blob `
-  --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
-```
-
-> 注意：每次执行第 3 步前必须重新执行第 2 步，否则会报 `Resource with that name already exists`。
-
-可选打包压缩包：
-
-```powershell
-Compress-Archive -Path .\dist\lan-drop.exe, .\使用说明.txt -DestinationPath .\lan-drop.zip -Force
-```
-
----
-
 ## HTTP API
 
 所有接口均开启 CORS，方便跨设备访问。
