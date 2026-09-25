@@ -33,7 +33,8 @@ const HELP = `
   -o, --open           启动后自动打开浏览器 (默认不打开, 点击控制台链接打开)
   -h, --help           显示帮助
 
-启动后自动放行防火墙, 并在控制台显示访问链接, 点击链接即可打开浏览器。
+启动后自动放行防火墙, 并把访问地址复制到剪贴板。
+在控制台输入 g 打开本机网页, 输入 q 退出。
 其他电脑用浏览器访问本机 IP:端口 即可上传下载, 无需安装任何东西。
 `;
 
@@ -357,6 +358,23 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+function activeIPv4() {
+  if (process.platform !== 'win32') return null;
+  try {
+    const out = spawnSync('route', ['print', '-4'], { encoding: 'utf8', windowsHide: true }).stdout || '';
+    let best = null;
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.trim().match(/^0\.0\.0\.0\s+0\.0\.0\.0\s+\S+\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)/);
+      if (!m) continue;
+      const metric = Number(m[2]);
+      if (!best || metric < best.metric) best = { ip: m[1], metric };
+    }
+    return best ? best.ip : null;
+  } catch {
+    return null;
+  }
+}
+
 function localIPv4() {
   const out = [];
   const VIRTUAL = /virtual|vmware|vethernet|hyper-v|zerotier|loopback|bluetooth|docker|tap|tun|wsl/i;
@@ -366,6 +384,14 @@ function localIPv4() {
       if (ni.family !== 'IPv4' || ni.internal) continue;
       if (ni.address.startsWith('169.254.')) continue;
       out.push(ni.address);
+    }
+  }
+  const active = activeIPv4();
+  if (active) {
+    const i = out.indexOf(active);
+    if (i > 0) {
+      out.splice(i, 1);
+      out.unshift(active);
     }
   }
   return out;
@@ -391,6 +417,35 @@ function openBrowser(url) {
   } catch {}
 }
 
+function copyToClipboard(text) {
+  try {
+    const [cmd, cmdArgs] =
+      process.platform === 'win32'
+        ? ['clip', []]
+        : process.platform === 'darwin'
+          ? ['pbcopy', []]
+          : ['xclip', ['-selection', 'clipboard']];
+    const r = spawnSync(cmd, cmdArgs, { input: text, windowsHide: true });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function setupKeyboard(openUrl) {
+  if (!process.stdin.isTTY) return;
+  try {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (key) => {
+      const k = String(key).trim().toLowerCase();
+      if (key === '\u0003' || k === 'q') process.exit(0);
+      else if (k === 'g') openBrowser(openUrl);
+    });
+  } catch {}
+}
+
 console.log('');
 console.log('  局域网互传 / LAN Drop');
 console.log('  ----------------------------------------');
@@ -398,19 +453,23 @@ ensureFirewall();
 
 server.listen(PORT, '0.0.0.0', () => {
   const ips = localIPv4();
+  const localUrl = `http://localhost:${PORT}`;
+  const shareUrl = `http://${ips[0] || 'localhost'}:${PORT}`;
   console.log(`  本机名称 : ${DEVICE_NAME}`);
   console.log(`  共享目录 : ${ROOT}`);
   if (ips.length === 0) {
-    console.log(`  访问地址 : ${hyperlink(`http://localhost:${PORT}`)}`);
+    console.log(`  访问地址 : ${hyperlink(localUrl)}`);
   } else {
     for (const ip of ips) console.log(`  访问地址 : ${hyperlink(`http://${ip}:${PORT}`)}`);
   }
+  const copied = copyToClipboard(shareUrl);
   console.log('  ----------------------------------------');
-  console.log(`  点击上面的链接即可打开浏览器 (本机用 ${hyperlink(`http://localhost:${PORT}`)})`);
+  console.log(copied ? `  地址已复制到剪贴板 : ${shareUrl}` : `  复制地址给其他电脑 : ${shareUrl}`);
+  console.log('  输入 g 打开本机网页, 输入 q 退出');
   console.log('  其他电脑在浏览器输入上面地址即可互传文件');
-  console.log('  关闭本窗口即可停止服务');
   console.log('');
-  if (OPEN_BROWSER) openBrowser(`http://localhost:${PORT}`);
+  if (OPEN_BROWSER) openBrowser(localUrl);
+  setupKeyboard(localUrl);
 });
 
 server.on('error', (err) => {
