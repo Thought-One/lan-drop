@@ -27,7 +27,11 @@ jobs:
           node-version: 22
 
       - name: Build SEA blob
-        run: node --experimental-sea-config sea-config.json
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          node --experimental-sea-config sea-config.json
+          Get-Item build/sea-prep.blob | Select-Object Name, Length
 
       - name: Copy node runtime to lan-drop.exe
         shell: pwsh
