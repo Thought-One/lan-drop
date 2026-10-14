@@ -1,0 +1,83 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已存在的 tag（用于手动重跑/补发）'
+        required: true
+        default: 'v1.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build SEA blob
+        run: node --experimental-sea-config sea-config.json
+
+      - name: Copy node runtime to lan-drop.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/lan-drop | Out-Null
+          Copy-Item (Get-Command node).Source dist/lan-drop/lan-drop.exe
+          Get-Item dist/lan-drop/lan-drop.exe | Select-Object Name, Length
+
+      - name: Inject blob with postject
+        run: >-
+          npx --yes postject dist/lan-drop/lan-drop.exe NODE_SEA_BLOB build/sea-prep.blob
+          --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = "dist/lan-drop/lan-drop.exe"
+          $log = Join-Path $env:RUNNER_TEMP "lan-drop.log"
+          $p = Start-Process -FilePath $exe -ArgumentList "-p", "7080" -PassThru `
+               -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "${log}.err"
+
+          $port = $null
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (Test-Path $log) {
+              $m = [regex]::Match((Get-Content $log -Raw -ErrorAction SilentlyContinue), 'http://[^:\s]+:(\d+)')
+              if ($m.Success) { $port = $m.Groups[1].Value; break }
+            }
+          }
+
+          $ok = $false
+          if ($port) {
+            for ($i = 0; $i -lt 20; $i++) {
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/api/info" -TimeoutSec 3
+                if ($r.StatusCode -eq 200) {
+                  Write-Host "smoke ok on port ${port}: $($r.Content)"
+                  $ok = $true
+                  break
+                }
+              } catch { Start-Sleep -Milliseconds 500 }
+            }
+          }
+
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          Get-Content $log -ErrorAction SilentlyContinue | Write-Host
+          if (-not $ok) { throw "smoke test failed (listening port: $port)" }
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/lan-drop/lan-drop.exe
