@@ -107,6 +107,16 @@ lan-drop.exe -p 8081 -d D:\share -n 我的电脑
 lan-drop.exe -p 8081
 ```
 
+**启动报 `listen EACCES: permission denied 0.0.0.0:8080`？**
+
+这不是端口被占用，而是 **Windows 把该端口段保留了**（常见于启用了 Hyper-V / WSL / Docker 的机器，8080 往往落在保留段内）。查看保留段：
+
+```powershell
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+程序会自动跳过保留或占用的端口并改用下一个可用端口（控制台会提示 `[端口] 8080 被系统保留 ... 改用 3000`），直接使用控制台打印的新地址即可。也可手动指定，例如 `-p 3000`。
+
 **exe 首次运行被 SmartScreen 拦截？**
 
 注入 SEA blob 后微软数字签名失效，属正常现象。点击「更多信息」→「仍要运行」即可。

@@ -65,7 +65,9 @@ const DEVICE_NAME = args.name || process.env.DEVICE_NAME || os.hostname();
 const OPEN_BROWSER = Boolean(args.open);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-const RULE_NAME = `LAN Drop ${PORT}`;
+function ruleName(port) {
+  return `LAN Drop ${port}`;
+}
 
 function isAdmin() {
   if (process.platform !== 'win32') return true;
@@ -73,19 +75,19 @@ function isAdmin() {
   return r.status === 0;
 }
 
-function firewallRuleExists() {
+function firewallRuleExists(port) {
   if (process.platform !== 'win32') return true;
   const r = spawnSync(
     'netsh',
-    ['advfirewall', 'firewall', 'show', 'rule', `name=${RULE_NAME}`],
+    ['advfirewall', 'firewall', 'show', 'rule', `name=${ruleName(port)}`],
     { stdio: 'ignore', windowsHide: true }
   );
   return r.status === 0;
 }
 
-function addFirewallRule() {
+function addFirewallRule(port) {
   if (process.platform !== 'win32') return true;
-  spawnSync('netsh', ['advfirewall', 'firewall', 'delete', 'rule', `name=${RULE_NAME}`], {
+  spawnSync('netsh', ['advfirewall', 'firewall', 'delete', 'rule', `name=${ruleName(port)}`], {
     stdio: 'ignore',
     windowsHide: true,
   });
@@ -93,8 +95,8 @@ function addFirewallRule() {
     'netsh',
     [
       'advfirewall', 'firewall', 'add', 'rule',
-      `name=${RULE_NAME}`,
-      'dir=in', 'action=allow', 'protocol=TCP', `localport=${PORT}`, 'profile=any',
+      `name=${ruleName(port)}`,
+      'dir=in', 'action=allow', 'protocol=TCP', `localport=${port}`, 'profile=any',
     ],
     { stdio: 'ignore', windowsHide: true }
   );
@@ -113,24 +115,24 @@ function elevateForFirewall() {
   } catch {}
 }
 
-function ensureFirewall() {
+function ensureFirewall(port) {
   if (process.platform !== 'win32') return;
-  if (firewallRuleExists()) return;
+  if (firewallRuleExists(port)) return;
 
   if (isAdmin()) {
-    if (addFirewallRule()) console.log(`  [防火墙] 已放行 TCP ${PORT}`);
+    if (addFirewallRule(port)) console.log(`  [防火墙] 已放行 TCP ${port}`);
     else console.log(`  [防火墙] 放行失败, 其他电脑可能无法连接`);
     return;
   }
 
-  console.log(`  [防火墙] 未放行 TCP ${PORT}, 正在请求管理员权限...`);
+  console.log(`  [防火墙] 未放行 TCP ${port}, 正在请求管理员权限...`);
   elevateForFirewall();
-  if (firewallRuleExists()) console.log(`  [防火墙] 已放行 TCP ${PORT}`);
+  if (firewallRuleExists(port)) console.log(`  [防火墙] 已放行 TCP ${port}`);
   else console.log(`  [防火墙] 未放行, 其他电脑可能无法连接 (可右键以管理员身份运行)`);
 }
 
 if (args.fwOnly) {
-  const ok = addFirewallRule();
+  const ok = addFirewallRule(PORT);
   process.exit(ok ? 0 : 1);
 }
 
@@ -274,10 +276,11 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (pathname === '/api/info' && req.method === 'GET') {
+      const addr = server.address();
       return json(res, 200, {
         name: DEVICE_NAME,
         dir: ROOT,
-        port: PORT,
+        port: addr ? addr.port : PORT,
         files: (await listFiles()).length,
       });
     }
@@ -449,18 +452,43 @@ function setupKeyboard(openUrl) {
 console.log('');
 console.log('  局域网互传 / LAN Drop');
 console.log('  ----------------------------------------');
-ensureFirewall();
 
-server.listen(PORT, '0.0.0.0', () => {
+// Windows reserves some port ranges for Hyper-V/WSL/Docker NAT; binding there
+// fails with EACCES. Build a fallback queue so startup never blocks on it.
+function portQueue(preferred) {
+  const q = [preferred];
+  const candidates = [3000, 4000, 5000, 6000, 7000, 7080, 7500, 9000, 10000, 12345, 15000, 20000, 23456, 30000, 34567, 45678];
+  for (const p of candidates) if (p !== preferred && !q.includes(p)) q.push(p);
+  while (q.length < 40) {
+    const p = 20000 + Math.floor(Math.random() * 40000);
+    if (!q.includes(p)) q.push(p);
+  }
+  return q;
+}
+
+const queue = portQueue(PORT);
+let triesLeft = queue.length;
+let currentPort = queue[0];
+
+function startListening() {
+  currentPort = queue.shift();
+  server.listen(currentPort, '0.0.0.0');
+  return currentPort;
+}
+
+server.on('listening', () => {
+  const actualPort = server.address().port;
+  ensureFirewall(actualPort);
+
   const ips = localIPv4();
-  const localUrl = `http://localhost:${PORT}`;
-  const shareUrl = `http://${ips[0] || 'localhost'}:${PORT}`;
+  const localUrl = `http://localhost:${actualPort}`;
+  const shareUrl = `http://${ips[0] || 'localhost'}:${actualPort}`;
   console.log(`  本机名称 : ${DEVICE_NAME}`);
   console.log(`  共享目录 : ${ROOT}`);
   if (ips.length === 0) {
     console.log(`  访问地址 : ${hyperlink(localUrl)}`);
   } else {
-    for (const ip of ips) console.log(`  访问地址 : ${hyperlink(`http://${ip}:${PORT}`)}`);
+    for (const ip of ips) console.log(`  访问地址 : ${hyperlink(`http://${ip}:${actualPort}`)}`);
   }
   const copied = copyToClipboard(shareUrl);
   console.log('  ----------------------------------------');
@@ -473,10 +501,23 @@ server.listen(PORT, '0.0.0.0', () => {
 });
 
 server.on('error', (err) => {
+  const blocked = err.code === 'EADDRINUSE' || err.code === 'EACCES';
+  if (blocked && triesLeft > 0) {
+    triesLeft--;
+    const next = queue[0];
+    const why = err.code === 'EACCES' ? '被系统保留 (Hyper-V/WSL 等)' : '已被占用';
+    console.log(`  [端口] ${err.port || currentPort} ${why}, 改用 ${next} ...`);
+    startListening();
+    return;
+  }
   if (err.code === 'EADDRINUSE') {
-    console.error(`\n  端口 ${PORT} 已被占用, 请用 --port 换一个端口, 例如: lan-drop.exe -p 8081\n`);
+    console.error(`\n  端口 ${currentPort} 已被占用, 请用 --port 换一个端口, 例如: lan-drop.exe -p 7080\n`);
+  } else if (err.code === 'EACCES') {
+    console.error(`\n  端口 ${currentPort} 被系统保留, 请用 --port 换一个端口, 例如: lan-drop.exe -p 7080\n`);
   } else {
     console.error('\n  启动失败:', err.message, '\n');
   }
   process.exit(1);
 });
+
+startListening();
